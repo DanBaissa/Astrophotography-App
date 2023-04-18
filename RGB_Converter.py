@@ -1,113 +1,116 @@
-import cv2
-import numpy as np
-from astropy.io import fits
 import tkinter as tk
 from tkinter import filedialog
+import astroalign as aa
+import numpy as np
+import glob
+from astropy.io import fits
+import tifffile
 
-class FITSAlignerGUI:
-    def __init__(self, master):
-        self.master = master
-        master.title("FITS Aligner")
+def process_images(reference_image_paths, images_folders, output_path):
+    channels = ['red', 'green', 'blue']
+    aligned_images_rgb = []
 
-        self.label = tk.Label(master, text="Select FITS files (R, G, B) and output image path")
-        self.label.pack()
+    for channel_index, (ref_image_path, images_folder) in enumerate(zip(reference_image_paths, images_folders)):
+        image_paths = glob.glob(f"{images_folder}/*.fits")
 
-        self.select_red_button = tk.Button(master, text="Select Red FITS", command=self.select_red_fits)
-        self.select_red_button.pack()
+        aligned_images = []
+        reference_img_data = fits.getdata(ref_image_path)
 
-        self.select_green_button = tk.Button(master, text="Select Green FITS", command=self.select_green_fits)
-        self.select_green_button.pack()
+        for img_path in image_paths:
+            img_data = fits.getdata(img_path)
 
-        self.select_blue_button = tk.Button(master, text="Select Blue FITS", command=self.select_blue_fits)
-        self.select_blue_button.pack()
-
-        self.select_output_button = tk.Button(master, text="Select Output Image", command=self.select_output_image)
-        self.select_output_button.pack()
-
-        self.align_button = tk.Button(master, text="Align and Save", command=self.align_and_save, state=tk.DISABLED)
-        self.align_button.pack()
-
-        self.red_fits_file = None
-        self.green_fits_file = None
-        self.blue_fits_file = None
-        self.output_image_path = None
-
-    def read_fits_image(self, file_path):
-        with fits.open(file_path) as hdulist:
-            data = hdulist[0].data
-        return data
-
-    def normalize_image(self, image_data):
-        normalized_image = image_data.copy()
-        normalized_image = cv2.normalize(image_data.astype(np.float32), None, 0.0, 1.0, cv2.NORM_MINMAX)
-        return normalized_image
-
-    def align_channels(self, channels):
-        aligned_channels = []
-
-        # Preprocess the channels by applying Gaussian blur to reduce noise
-        channels_blurred = [cv2.GaussianBlur(channel, (5, 5), 0) for channel in channels]
-
-        # Select the reference channel (the one with the highest mean)
-        reference_channel_index = np.argmax([np.mean(channel) for channel in channels_blurred])
-        reference_channel = channels_blurred[reference_channel_index]
-
-        for i, channel in enumerate(channels_blurred):
-            if i == reference_channel_index:
-                aligned_channels.append(channels[i])  # No alignment needed for the reference channel
+            try:
+                aligned_img, _ = aa.register(img_data, reference_img_data)
+                aligned_images.append(aligned_img)
+            except aa.MaxIterError:
+                print(f"Could not align {img_path} in {channels[channel_index]} channel. Skipping.")
                 continue
 
-            # Register the channel to the reference channel
-            warp_mode = cv2.MOTION_HOMOGRAPHY
-            warp_matrix = np.eye(3, 3, dtype=np.float32)
-            criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 5000, 1e-10)
-            _, warp_matrix = cv2.findTransformECC(reference_channel, channel, warp_matrix, warp_mode, criteria)
+        stacked_image = np.zeros_like(aligned_images[0], dtype=np.float64)
 
-            # Apply the transformation to the original channel
-            aligned_channel = cv2.warpPerspective(channels[i], warp_matrix, (channels[i].shape[1], channels[i].shape[0]), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
-            aligned_channels.append(aligned_channel)
+        for image in aligned_images:
+            stacked_image += image
 
-        return aligned_channels
+        stacked_image /= len(aligned_images)
+        aligned_images_rgb.append(stacked_image)
 
-    def save_as_color_image(self, red, green, blue, output_path):
-        color_image = cv2.merge((blue, green, red))
-        cv2.imwrite(output_path, (color_image * 255).astype(np.uint8))
+    # Align stacked images of each channel
+    reference_stacked_image = aligned_images_rgb[0]
+    for idx, stacked_image in enumerate(aligned_images_rgb[1:], 1):
+        try:
+            aligned_stacked_image, _ = aa.register(stacked_image, reference_stacked_image)
+            aligned_images_rgb[idx] = aligned_stacked_image
+        except aa.MaxIterError:
+            print(f"Could not align the stacked image of {channels[idx]} channel. Skipping alignment.")
+            continue
 
-    def select_red_fits(self):
-        self.red_fits_file = filedialog.askopenfilename(filetypes=[        ("FITS files", "*.fits")])
-        self.check_files()
+    height, width = aligned_images_rgb[0].shape
+    merged_tiff = np.zeros((height, width, 3), dtype=np.float64)
 
-    def select_green_fits(self):
-        self.green_fits_file = filedialog.askopenfilename(filetypes=[("FITS files", "*.fits")])
-        self.check_files()
+    for channel_index, stacked_image in enumerate(aligned_images_rgb):
+        merged_tiff[..., channel_index] = stacked_image
 
-    def select_blue_fits(self):
-        self.blue_fits_file = filedialog.askopenfilename(filetypes=[("FITS files", "*.fits")])
-        self.check_files()
+    merged_tiff = (merged_tiff / np.max(merged_tiff) * 255).astype(np.uint8)
+    tifffile.imwrite(output_path, merged_tiff)
+    print(f"Merged TIFF saved as {output_path}.")
 
-    def select_output_image(self):
-        self.output_image_path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")])
-        self.check_files()
+# GUI functions
 
-    def check_files(self):
-        if self.red_fits_file and self.green_fits_file and self.blue_fits_file and self.output_image_path:
-            self.align_button.config(state=tk.NORMAL)
+def browse_reference_image(channel):
+    file_path = filedialog.askopenfilename(filetypes=[("FITS files", "*.fits")])
+    reference_image_paths[channel].set(file_path)
 
-    def align_and_save(self):
-        red_data = self.read_fits_image(self.red_fits_file)
-        green_data = self.read_fits_image(self.green_fits_file)
-        blue_data = self.read_fits_image(self.blue_fits_file)
+def browse_images_folder(channel):
+    folder_path = filedialog.askdirectory()
+    images_folders[channel].set(folder_path)
 
-        red_norm = self.normalize_image(red_data)
-        green_norm = self.normalize_image(green_data)
-        blue_norm = self.normalize_image(blue_data)
+def browse_output_folder():
+    file_path = filedialog.asksaveasfilename(defaultextension=".tiff", filetypes=[("TIFF files", "*.tiff")])
+    output_path.set(file_path)
 
-        aligned_channels = self.align_channels([red_norm, green_norm, blue_norm])
+def run_alignment_and_stacking():
+    process_images(
+        [reference_image_paths[0].get(), reference_image_paths[1].get(), reference_image_paths[2].get()],
+        [images_folders[0].get(), images_folders[1].get(), images_folders[2].get()],
+        output_path.get(),
+    )
+    status_label.config(text="Processing complete")
 
-        self.save_as_color_image(*aligned_channels, self.output_image_path)
+# GUI setup
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    gui = FITSAlignerGUI(root)
-    root.mainloop()
+root = tk.Tk()
+root.title("RGB Image Alignment and Stacking")
+
+channels = ['Red', 'Green', 'Blue']
+reference_image_paths = [tk.StringVar() for _ in channels]
+images_folders = [tk.StringVar() for _ in channels]
+
+for idx, channel in enumerate(channels):
+    row_offset = idx * 2
+
+    # Reference image selection
+    tk.Label(root, text=f"{channel} Reference Image:").grid(row=row_offset, column=0, sticky=tk.W)
+    tk.Entry(root, textvariable=reference_image_paths[idx], width=50).grid(row=row_offset, column=1)
+    tk.Button(root, text="Browse", command=lambda ch=idx: browse_reference_image(ch)).grid(row=row_offset, column=2)
+
+    # Images folder selection
+    tk.Label(root, text=f"{channel} Images Folder:").grid(row=row_offset + 1, column=0, sticky=tk.W)
+    tk.Entry(root, textvariable=images_folders[idx], width=50).grid(row=row_offset + 1, column=1)
+    tk.Button(root, text="Browse", command=lambda ch=idx: browse_images_folder(ch)).grid(row=row_offset + 1, column=2)
+
+# Output folder selection
+output_path = tk.StringVar()
+tk.Label(root, text="Output Image:").grid(row=6, column=0, sticky=tk.W)
+tk.Entry(root, textvariable=output_path, width=50).grid(row=6, column=1)
+tk.Button(root, text="Browse", command=browse_output_folder).grid(row=6, column=2)
+
+# Run button
+tk.Button(root, text="Run Alignment and Stacking", command=run_alignment_and_stacking).grid(row=7, columnspan=3,
+                                                                                            pady=10)
+
+# Status label
+status_label = tk.Label(root, text="")
+status_label.grid(row=8, columnspan=3)
+
+root.mainloop()
 
