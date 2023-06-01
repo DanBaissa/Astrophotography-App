@@ -7,7 +7,7 @@ from astropy.io import fits
 import tifffile
 import glob
 
-def process_images(reference_image_paths, images_folders, output_path, normalize_after_stacking):
+def process_images(reference_image_paths, images_folders, output_path, normalize_after_stacking, apply_ln):
     channels = ['red', 'green', 'blue']
     aligned_images_rgb = []
 
@@ -52,6 +52,9 @@ def process_images(reference_image_paths, images_folders, output_path, normalize
     for channel_index, stacked_image in enumerate(aligned_images_rgb):
         merged_tiff[..., channel_index] = stacked_image
 
+    if apply_ln:
+        merged_tiff = np.log1p(merged_tiff)  # use log1p to handle zero values
+
     merged_tiff = (merged_tiff / np.max(merged_tiff) * 255).astype(np.uint8)
     tifffile.imwrite(output_path, merged_tiff)
     print(f"Merged TIFF saved as {output_path}.")
@@ -70,10 +73,12 @@ def browse_output_folder():
 
 def run_alignment_and_stacking():
     process_images(
-        [reference_image_paths[0].get(), reference_image_paths[1].get(), reference_image_paths[2].get()],
+        [reference_image_paths[0].get(), reference_image_paths[1].get
+(), reference_image_paths[2].get()],
         [images_folders[0].get(), images_folders[1].get(), images_folders[2].get()],
         output_path.get(),
-        normalize_var.get()
+        normalize_var.get(),
+        ln_var.get()
     )
     status_label.config(text="Processing complete")
 
@@ -84,6 +89,7 @@ channels = ['Red', 'Green', 'Blue']
 reference_image_paths = [tk.StringVar() for _ in channels]
 images_folders = [tk.StringVar() for _ in channels]
 normalize_var = tk.IntVar()
+ln_var = tk.IntVar()
 
 for idx, channel in enumerate(channels):
     row_offset = idx * 2
@@ -103,10 +109,13 @@ tk.Button(root, text="Browse", command=browse_output_folder).grid(row=6, column=
 # Normalize option
 tk.Checkbutton(root, text="Normalize After Stacking", variable=normalize_var).grid(row=7, columnspan=3, pady=10)
 
-tk.Button(root, text="Run Alignment and Stacking", command=run_alignment_and_stacking).grid(row=8, columnspan=3,
+# Natural Logarithm option
+tk.Checkbutton(root, text="Apply Natural Logarithm", variable=ln_var).grid(row=8, columnspan=3, pady=10)
+
+tk.Button(root, text="Run Alignment and Stacking", command=run_alignment_and_stacking).grid(row=9, columnspan=3,
                                                                                             pady=10)
 
 status_label = tk.Label(root, text="")
-status_label.grid(row=9, columnspan=3)
+status_label.grid(row=10, columnspan=3)
 
 root.mainloop()
