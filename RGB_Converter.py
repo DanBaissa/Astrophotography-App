@@ -5,8 +5,9 @@ import numpy as np
 import glob
 from astropy.io import fits
 import tifffile
+import glob
 
-def process_images(reference_image_paths, images_folders, output_path):
+def process_images(reference_image_paths, images_folders, output_path, normalize_after_stacking):
     channels = ['red', 'green', 'blue']
     aligned_images_rgb = []
 
@@ -32,9 +33,10 @@ def process_images(reference_image_paths, images_folders, output_path):
             stacked_image += image
 
         stacked_image /= len(aligned_images)
+        if normalize_after_stacking:
+            stacked_image /= np.max(stacked_image)
         aligned_images_rgb.append(stacked_image)
 
-    # Align stacked images of each channel
     reference_stacked_image = aligned_images_rgb[0]
     for idx, stacked_image in enumerate(aligned_images_rgb[1:], 1):
         try:
@@ -54,8 +56,6 @@ def process_images(reference_image_paths, images_folders, output_path):
     tifffile.imwrite(output_path, merged_tiff)
     print(f"Merged TIFF saved as {output_path}.")
 
-# GUI functions
-
 def browse_reference_image(channel):
     file_path = filedialog.askopenfilename(filetypes=[("FITS files", "*.fits")])
     reference_image_paths[channel].set(file_path)
@@ -73,10 +73,9 @@ def run_alignment_and_stacking():
         [reference_image_paths[0].get(), reference_image_paths[1].get(), reference_image_paths[2].get()],
         [images_folders[0].get(), images_folders[1].get(), images_folders[2].get()],
         output_path.get(),
+        normalize_var.get()
     )
     status_label.config(text="Processing complete")
-
-# GUI setup
 
 root = tk.Tk()
 root.title("RGB Image Alignment and Stacking")
@@ -84,33 +83,30 @@ root.title("RGB Image Alignment and Stacking")
 channels = ['Red', 'Green', 'Blue']
 reference_image_paths = [tk.StringVar() for _ in channels]
 images_folders = [tk.StringVar() for _ in channels]
+normalize_var = tk.IntVar()
 
 for idx, channel in enumerate(channels):
     row_offset = idx * 2
-
-    # Reference image selection
     tk.Label(root, text=f"{channel} Reference Image:").grid(row=row_offset, column=0, sticky=tk.W)
     tk.Entry(root, textvariable=reference_image_paths[idx], width=50).grid(row=row_offset, column=1)
     tk.Button(root, text="Browse", command=lambda ch=idx: browse_reference_image(ch)).grid(row=row_offset, column=2)
 
-    # Images folder selection
     tk.Label(root, text=f"{channel} Images Folder:").grid(row=row_offset + 1, column=0, sticky=tk.W)
     tk.Entry(root, textvariable=images_folders[idx], width=50).grid(row=row_offset + 1, column=1)
     tk.Button(root, text="Browse", command=lambda ch=idx: browse_images_folder(ch)).grid(row=row_offset + 1, column=2)
 
-# Output folder selection
 output_path = tk.StringVar()
 tk.Label(root, text="Output Image:").grid(row=6, column=0, sticky=tk.W)
 tk.Entry(root, textvariable=output_path, width=50).grid(row=6, column=1)
 tk.Button(root, text="Browse", command=browse_output_folder).grid(row=6, column=2)
 
-# Run button
-tk.Button(root, text="Run Alignment and Stacking", command=run_alignment_and_stacking).grid(row=7, columnspan=3,
+# Normalize option
+tk.Checkbutton(root, text="Normalize After Stacking", variable=normalize_var).grid(row=7, columnspan=3, pady=10)
+
+tk.Button(root, text="Run Alignment and Stacking", command=run_alignment_and_stacking).grid(row=8, columnspan=3,
                                                                                             pady=10)
 
-# Status label
 status_label = tk.Label(root, text="")
-status_label.grid(row=8, columnspan=3)
+status_label.grid(row=9, columnspan=3)
 
 root.mainloop()
-
